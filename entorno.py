@@ -109,4 +109,4 @@ class AlmacenEnv(gym.Env):
             
         info = {}
         estado = (self.robot_x, self.robot_y, self.theta, self.tiene_producto, self.id_objetivo)
-        return estado, recompensa, terminated := terminado, False, info
+        return estado, reward, terminado, False, info
