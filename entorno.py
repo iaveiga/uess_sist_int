@@ -1,49 +1,47 @@
 import gymnasium as gym
 from gymnasium import spaces
 import numpy as np
+import copy
 
 class AlmacenEnv(gym.Env):
     def __init__(self, mapa, inventario, catalogo_skus, sku_objetivo):
         super(AlmacenEnv, self).__init__()
         
         self.mapa = mapa
-        self.inventario = inventario
-        self.alto, self.ancho = mapa.shape
+        # Creamos una copia del inventario inicial
+        # Puesto que operaremos y al ser objetos se modifican directametne
+        self.inventario_original = copy.deepcopy(inventario) 
+        self.inventario = copy.deepcopy(inventario)
         
-        # Mapeo de SKUs a IDs numéricos para que la Q-Table los procese
-        self.catalogo_skus = list(catalogo_skus) # Lista de todos los SKUs posibles
+        self.alto, self.ancho = mapa.shape
+        self.catalogo_skus = list(catalogo_skus)
         self.num_skus = len(self.catalogo_skus)
         self.sku_objetivo = sku_objetivo
         self.id_objetivo = self.catalogo_skus.index(sku_objetivo)
         
-        # Acciones: 
-        # 0: Avanzar, 1: Girar Izquierda, 2: Girar Derecha, 3: Extraer Objeto
         self.action_space = spaces.Discrete(4)
         
-        # Espacio de Estados: (x, y, theta, B_t, M)
-        # - x: [0, ancho-1]
-        # - y: [0, alto-1]
-        # - theta: [0, 3] (0=Norte, 1=Este, 2=Sur, 3=Oeste)
-        # - B_t: [0, 1] (Carga)
-        # - M: [0, num_skus-1] (ID del SKU objetivo)
         self.observation_space = spaces.Tuple((
             spaces.Discrete(self.ancho),
             spaces.Discrete(self.alto),
-            spaces.Discrete(4), # theta
-            spaces.Discrete(2), # B_t
-            spaces.Discrete(self.num_skus) # M
+            spaces.Discrete(4),
+            spaces.Discrete(2),
+            spaces.Discrete(self.num_skus)
         ))
         
         self.reset()
+
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
         self.robot_x = 0
         self.robot_y = 0
-        self.theta = 0 # Inicialmente mirando al Norte (0)
-        self.tiene_producto = 0 # B_t = 0
+        self.theta = 0 # Inicialmente mira al Norte (0)
+        self.tiene_producto = 0 
         
-        # El estado actual completo como tupla
+        # Restauramos el inventario original
+        self.inventario = copy.deepcopy(self.inventario_original)
+        
         estado_inicial = (self.robot_x, self.robot_y, self.theta, self.tiene_producto, self.id_objetivo)
         return estado_inicial, {}
 
