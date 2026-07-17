@@ -99,34 +99,44 @@ class AlmacenEnv(gym.Env):
         elif action == 3:  # Extraer
             encontrado = False
             dx, dy = 0, 0
-            if self.theta == 0: dy = -1
-            elif self.theta == 1: dx = 1
-            elif self.theta == 2: dy = 1
-            elif self.theta == 3: dx = -1
+            if self.theta == 0: dy = -1   # Mirando al Norte
+            elif self.theta == 1: dx = 1  # Mirando al Este
+            elif self.theta == 2: dy = 1  # Mirando al Sur
+            elif self.theta == 3: dx = -1 # Mirando al Oeste
             
             px, py = self.robot_x + dx, self.robot_y + dy
             
-            # Verifica los límites y si tiene una percha en frente
+
+            # Verifica si está a 1 unidad de distancia del objetivo
+            es_vecino = (abs(self.robot_x - self.obj_x) + abs(self.robot_y - self.obj_y)) == 1
+            
+            if es_vecino:
+                apunta_al_objetivo = (self.robot_x + dx == self.obj_x) and (self.robot_y + dy == self.obj_y)
+                if not apunta_al_objetivo:
+                    # Pista: Hay que realizar un giro
+                    recompensa = -5  # Un castigo mucho menor que el -30 estándar por fallar.
+                    
+            
+            # 1. Verifica límites y si hay una percha en la dirección que mira
             if 0 <= px < self.ancho and 0 <= py < self.alto and self.mapa[py, px] == 1:
-                percha = self.inventario.get((px, py), {}) # Estructura: {nivel_0: [skus], nivel_1: [skus]...}
+                percha = self.inventario.get((px, py), {})
                 
-                # Recorre los R niveles (0 a 3) #harcoded por ahora
-                for nivel in range(4):  # R = 4 niveles
+                # 2. Recorre los R niveles (0 a 3)
+                for nivel in range(4):  # R = 4 niveles harcoded por ahora
                     lista_skus = percha.get(nivel, [])
                     
-                    # Busca el SKU objetivo en los Z objetos de este nivel
+                    # 3. Buscar el objetivo en los Z objetos de este nivel
                     if self.sku_objetivo in lista_skus:
                         idx = lista_skus.index(self.sku_objetivo)
                         
-                        # Retirar una unidad del stock decrementando o dejándolo en None
-                        lista_skus[idx] = None  
+                        lista_skus[idx] = None  # Retirar stock
                         self.tiene_producto = 1
-                        recompensa = 250  # Encontró el objeto
+                        recompensa = 300  # Aumenta la recompensa porque encontró el objeto
                         encontrado = True
-                        break # Salimos del bucle de niveles
+                        break
                 
-            if not encontrado:
-                recompensa = -30  # Castigo por fallar la extracción
+            if not encontrado and not es_vecino:
+                recompensa = -30  # Castigo alto si extrae en un lugar completamente incorrecto
 
  
         if self.tiene_producto == 0:
