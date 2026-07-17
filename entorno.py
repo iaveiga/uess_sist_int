@@ -13,21 +13,22 @@ class AlmacenEnv(gym.Env):
         
         self.alto, self.ancho = mapa.shape
         self.catalogo_skus = list(catalogo_skus)
-        self.num_skus = len(self.catalogo_skus)
         self.sku_objetivo = sku_objetivo
-        self.id_objetivo = self.catalogo_skus.index(sku_objetivo)
         
         self.max_pasos = max_pasos
         self.pasos_actuales = 0
         
         self.action_space = spaces.Discrete(4)
         
+        # OBSERVATION SPACE COMPACTO (Usa direcciones relativas en vez del ID del SKU)
+        # Dimensiones: ancho, alto, 4 orientaciones, 2 estados de carga, 3 posiciones en X, 3 posiciones en Y
         self.observation_space = spaces.Tuple((
             spaces.Discrete(self.ancho),
             spaces.Discrete(self.alto),
             spaces.Discrete(4),
             spaces.Discrete(2),
-            spaces.Discrete(self.num_skus)
+            spaces.Discrete(3), # dx relativo (-1, 0, 1) mapeado a (0, 1, 2)
+            spaces.Discrete(3)  # dy relativo (-1, 0, 1) mapeado a (0, 1, 2)
         ))
         
         # Coordenadas objetivo que se calcularán dinámicamente
@@ -35,6 +36,18 @@ class AlmacenEnv(gym.Env):
         self.obj_y = 0
         
         self.reset()
+
+    def _get_relativo(self):
+        """Calcula la dirección relativa al objetivo actual (o a la base si ya tiene carga)."""
+        # Si ya tiene el producto, el objetivo relativo pasa a ser la base (0,0)
+        target_x = 0 if self.tiene_producto == 1 else self.obj_x
+        target_y = 0 if self.tiene_producto == 1 else self.obj_y
+        
+        dx = np.sign(target_x - self.robot_x)
+        dy = np.sign(target_y - self.robot_y)
+        
+        # Convertimos [-1, 0, 1] a [0, 1, 2] para cumplir con el espacio discreto
+        return int(dx + 1), int(dy + 1)
 
     def _actualizar_coordenada_objetivo(self):
         """Busca en el inventario la coordenada real (x, y) del SKU objetivo."""
@@ -57,7 +70,8 @@ class AlmacenEnv(gym.Env):
         self.inventario = copy.deepcopy(self.inventario_original)
         self._actualizar_coordenada_objetivo()
         
-        estado_inicial = (self.robot_x, self.robot_y, self.theta, self.tiene_producto, self.id_objetivo)
+        dx_rel, dy_rel = self._get_relativo()
+        estado_inicial = (self.robot_x, self.robot_y, self.theta, self.tiene_producto, dx_rel, dy_rel)
         return estado_inicial, {}
 
     def step(self, action):
@@ -106,26 +120,24 @@ class AlmacenEnv(gym.Env):
             
             px, py = self.robot_x + dx, self.robot_y + dy
             
-
             # Verifica si está a 1 unidad de distancia del objetivo
             es_vecino = (abs(self.robot_x - self.obj_x) + abs(self.robot_y - self.obj_y)) == 1
             
             if es_vecino:
-                apunta_al_objetivo = (self.robot_x + dx == self.obj_x) and (self.robot_y + dy == self.obj_y)
+                apunta_al_objetivo = (px == self.obj_x) and (py == self.obj_y)
                 if not apunta_al_objetivo:
                     # Pista: Hay que realizar un giro
-                    recompensa = -5  # Un castigo mucho menor que el -30 estándar por fallar.
+                    recompensa = -5  
                     
-            
-            # 1. Verifica límites y si hay una percha en la dirección que mira
+            # 1. Verifica límites del mapa y si hay una percha en la dirección que mira
             if 0 <= px < self.ancho and 0 <= py < self.alto and self.mapa[py, px] == 1:
                 percha = self.inventario.get((px, py), {})
                 
-                # 2. Recorre los R niveles (0 a 3)
-                for nivel in range(4):  # R = 4 niveles harcoded por ahora
+                # 2. Itera los niveles de la percha
+                for nivel in percha.keys():  
                     lista_skus = percha.get(nivel, [])
                     
-                    # 3. Buscar el objetivo en los Z objetos de este nivel
+                    # 3. Busca automáticamente la cantidad de z-objetos
                     if self.sku_objetivo in lista_skus:
                         idx = lista_skus.index(self.sku_objetivo)
                         
@@ -138,14 +150,13 @@ class AlmacenEnv(gym.Env):
             if not encontrado and not es_vecino:
                 recompensa = -30  # Castigo alto si extrae en un lugar completamente incorrecto
 
- 
         if self.tiene_producto == 0:
-            # Recompensa si se está acercando al SKU objetivo
+            # Recompensa si se está acercando al objetivo
             dist_nueva = abs(self.robot_x - self.obj_x) + abs(self.robot_y - self.obj_y)
             if dist_nueva < dist_previa:
-                recompensa += 2.0  # Incentivo positivo por avanzar en la dirección correcta
+                recompensa += 2.0  # Recompensa por ir en la dirección correcta
             elif dist_nueva > dist_previa:
-                recompensa -= 1.0  # Penalización por alejarse del objetivo
+                recompensa -= 1.0  # Castigo por  alejarse del objetivo
         else:
             # Si ya tiene el producto, premiamos que se acerque al punto de retorno (0,0)
             dist_retorno_previa = abs(prev_x - 0) + abs(prev_y - 0)
@@ -154,20 +165,21 @@ class AlmacenEnv(gym.Env):
                 recompensa += 2.0  # Incentivo por volver a base
             elif dist_retorno_nueva > dist_retorno_previa:
                 recompensa -= 1.0
-
         
         if self.robot_x == 0 and self.robot_y == 0:
             if self.tiene_producto == 1:
-                recompensa = 500  # Premio gigante por completar el circuito completo
+                recompensa = 500  # Recompensa grande por completar el circuito completo
                 terminado = True
             else:
                 recompensa = -50  # Castigo fuerte por volver a base con las manos vacías
 
-        # --- 5. LÍMITE DE PASOS ---
         if self.pasos_actuales >= self.max_pasos:
             truncado = True
 
+        # Calcular las nuevas posiciones relativas para el estado de retorno
+        dx_rel, dy_rel = self._get_relativo()
+
         info = {}
-        estado = (self.robot_x, self.robot_y, self.theta, self.tiene_producto, self.id_objetivo)
+        estado = (self.robot_x, self.robot_y, self.theta, self.tiene_producto, dx_rel, dy_rel)
         
         return estado, recompensa, terminado, truncado, info
