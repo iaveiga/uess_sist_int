@@ -4,7 +4,7 @@ import numpy as np
 import copy
 
 class AlmacenEnv(gym.Env):
-    def __init__(self, mapa, inventario, catalogo_skus, sku_objetivo, max_pasos=200):
+    def __init__(self, mapa, inventario, catalogo_skus, sku_objetivo, max_pasos=400):
         super(AlmacenEnv, self).__init__()
         
         self.mapa = mapa
@@ -17,7 +17,6 @@ class AlmacenEnv(gym.Env):
         self.sku_objetivo = sku_objetivo
         self.id_objetivo = self.catalogo_skus.index(sku_objetivo)
         
-        # Este límite evita bucles infinitos durante el entrenamiento
         self.max_pasos = max_pasos
         self.pasos_actuales = 0
         
@@ -31,7 +30,21 @@ class AlmacenEnv(gym.Env):
             spaces.Discrete(self.num_skus)
         ))
         
+        # Coordenadas objetivo que se calcularán dinámicamente
+        self.obj_x = 0
+        self.obj_y = 0
+        
         self.reset()
+
+    def _actualizar_coordenada_objetivo(self):
+        """Busca en el inventario la coordenada real (x, y) del SKU objetivo."""
+        for coord, niveles in self.inventario.items():
+            for nivel, skus in niveles.items():
+                if self.sku_objetivo in skus:
+                    self.obj_x, self.obj_y = coord
+                    return
+        # Si por alguna razón no se encuentra, por defecto apunta al origen
+        self.obj_x, self.obj_y = 0, 0
 
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
@@ -42,6 +55,7 @@ class AlmacenEnv(gym.Env):
         self.pasos_actuales = 0
         
         self.inventario = copy.deepcopy(self.inventario_original)
+        self._actualizar_coordenada_objetivo()
         
         estado_inicial = (self.robot_x, self.robot_y, self.theta, self.tiene_producto, self.id_objetivo)
         return estado_inicial, {}
@@ -50,13 +64,13 @@ class AlmacenEnv(gym.Env):
         self.pasos_actuales += 1
         prev_x, prev_y = self.robot_x, self.robot_y
         
-        # Penalización base por paso (incentiva la velocidad y rutas cortas)
+        # Penalización base por paso (incentivo de tiempo)
         recompensa = -1
         terminado = False
         truncado = False
         
-        # --- 1. EJECUCIÓN DE ACCIONES ---
-        
+        dist_previa = abs(prev_x - self.obj_x) + abs(prev_y - self.obj_y)
+
         if action == 0:  # Avanzar
             if self.theta == 0:    # Norte
                 self.robot_y = max(0, self.robot_y - 1)
@@ -67,22 +81,22 @@ class AlmacenEnv(gym.Env):
             elif self.theta == 3:  # Oeste
                 self.robot_x = max(0, self.robot_x - 1)
                 
-            # Verifica si el robot chocó con una percha o no se mueve por estar frente a una pared externa
+            # Verificar si chocó contra una percha (valor 1) o límites
             if self.mapa[self.robot_y, self.robot_x] == 1:
-                recompensa = -15  # Penalización por chocar contra percha
-                self.robot_x, self.robot_y = prev_x, prev_y  # Deshacer movimiento
+                recompensa = -15  
+                self.robot_x, self.robot_y = prev_x, prev_y  
             elif self.robot_x == prev_x and self.robot_y == prev_y:
-                recompensa = -10  # Penalización por chocar contra límites exteriores del mapa
+                recompensa = -10  
                 
         elif action == 1:  # Girar Izquierda
             self.theta = (self.theta - 1) % 4
-            recompensa = -2   # Castigo ligeramente mayor para evitar giros infinitos sin sentido
+            recompensa = -1.5   # Penalización intermedia para evitar giros infinitos
             
         elif action == 2:  # Girar Derecha
             self.theta = (self.theta + 1) % 4
-            recompensa = -2   # Castigo ligeramente mayor para evitar giros infinitos sin sentido
+            recompensa = -1.5   
             
-        elif action == 3:  # Extrae el objeto
+        elif action == 3:  # Extraer
             encontrado = False
             dx, dy = 0, 0
             if self.theta == 0: dy = -1
@@ -92,28 +106,47 @@ class AlmacenEnv(gym.Env):
             
             px, py = self.robot_x + dx, self.robot_y + dy
             
-            # Verificar si enfrente hay una percha válida
+            # Verificar si enfrente está la percha que contiene el SKU objetivo
             if 0 <= px < self.ancho and 0 <= py < self.alto and self.mapa[py, px] == 1:
                 percha = self.inventario.get((px, py), {})
                 for nivel in percha:
                     if self.sku_objetivo in percha[nivel]:
                         idx = percha[nivel].index(self.sku_objetivo)
-                        percha[nivel][idx] = None  # Retirar objeto
+                        percha[nivel][idx] = None  # Retirar del stock
                         self.tiene_producto = 1
-                        recompensa = 150  # Recompensa por recolectar el objetivo
+                        recompensa = 250  # Recompensa masiva por recolectar el objetivo correcto
                         encontrado = True
                         break
                 
             if not encontrado:
-                recompensa = -20  # Se castiga por perder el tiempo intentado extraer donde no hay
+                recompensa = -30  # Penalización alta por intentar extraer en el aire o estante incorrecto
 
-
-                
-        if self.robot_x == 0 and self.robot_y == 0 and self.tiene_producto == 1:
-            recompensa = 300  # Recompensa considerable por completar la misión con éxito
-            terminado = True
+ 
+        if self.tiene_producto == 0:
+            # Recompensa si se está acercando al SKU objetivo
+            dist_nueva = abs(self.robot_x - self.obj_x) + abs(self.robot_y - self.obj_y)
+            if dist_nueva < dist_previa:
+                recompensa += 2.0  # Incentivo positivo por avanzar en la dirección correcta
+            elif dist_nueva > dist_previa:
+                recompensa -= 1.0  # Penalización por alejarse del objetivo
+        else:
+            # Si ya tiene el producto, premiamos que se acerque al punto de retorno (0,0)
+            dist_retorno_previa = abs(prev_x - 0) + abs(prev_y - 0)
+            dist_retorno_nueva = abs(self.robot_x - 0) + abs(self.robot_y - 0)
+            if dist_retorno_nueva < dist_retorno_previa:
+                recompensa += 2.0  # Incentivo por volver a base
+            elif dist_retorno_nueva > dist_retorno_previa:
+                recompensa -= 1.0
 
         
+        if self.robot_x == 0 and self.robot_y == 0:
+            if self.tiene_producto == 1:
+                recompensa = 500  # Premio gigante por completar el circuito completo
+                terminado = True
+            else:
+                recompensa = -50  # Castigo fuerte por volver a base con las manos vacías
+
+        # --- 5. LÍMITE DE PASOS ---
         if self.pasos_actuales >= self.max_pasos:
             truncado = True
 
