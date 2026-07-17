@@ -106,20 +106,27 @@ class AlmacenEnv(gym.Env):
             
             px, py = self.robot_x + dx, self.robot_y + dy
             
-            # Verificar si enfrente está la percha que contiene el SKU objetivo
+            # Verifica los límites y si tiene una percha en frente
             if 0 <= px < self.ancho and 0 <= py < self.alto and self.mapa[py, px] == 1:
-                percha = self.inventario.get((px, py), {})
-                for nivel in percha:
-                    if self.sku_objetivo in percha[nivel]:
-                        idx = percha[nivel].index(self.sku_objetivo)
-                        percha[nivel][idx] = None  # Retirar del stock
+                percha = self.inventario.get((px, py), {}) # Estructura: {nivel_0: [skus], nivel_1: [skus]...}
+                
+                # Recorre los R niveles (0 a 3) #harcoded por ahora
+                for nivel in range(4):  # R = 4 niveles
+                    lista_skus = percha.get(nivel, [])
+                    
+                    # Busca el SKU objetivo en los Z objetos de este nivel
+                    if self.sku_objetivo in lista_skus:
+                        idx = lista_skus.index(self.sku_objetivo)
+                        
+                        # Retirar una unidad del stock decrementando o dejándolo en None
+                        lista_skus[idx] = None  
                         self.tiene_producto = 1
-                        recompensa = 250  # Recompensa masiva por recolectar el objetivo correcto
+                        recompensa = 250  # Encontró el objeto
                         encontrado = True
-                        break
+                        break # Salimos del bucle de niveles
                 
             if not encontrado:
-                recompensa = -30  # Penalización alta por intentar extraer en el aire o estante incorrecto
+                recompensa = -30  # Castigo por fallar la extracción
 
  
         if self.tiene_producto == 0:
